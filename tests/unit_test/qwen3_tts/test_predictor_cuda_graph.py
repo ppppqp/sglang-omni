@@ -767,6 +767,58 @@ def test_top_p_removed_ranks_never_sampled():
         ), f"seed={seed} sampled a nucleus-removed rank: {token.item()}"
 
 
+@pytest.mark.skipif(not _HAS_CUDA, reason="seeded sampling kernel needs CUDA")
+@pytest.mark.parametrize("use_top_p", [False, True])
+def test_fused_bounded_sampling_matches_eager_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    use_top_p: bool,
+):
+    """The fused bounded-top-k path must match the production eager fallback."""
+    device = torch.device("cuda")
+    talker = _build_talker(device)
+    batch_size = 16
+    generator = torch.Generator(device=device).manual_seed(20260729)
+    logits = torch.randn(
+        batch_size,
+        PRED_VOCAB,
+        generator=generator,
+        device=device,
+        dtype=torch.float32,
+    )
+    requests = [
+        _request(
+            temperature=(0.6, 0.9, 1.3)[row % 3],
+            top_p=(0.35, 0.7, 0.95, 1.0)[row % 4] if use_top_p else 1.0,
+            top_k=(2, 3, 5, 7)[row % 4],
+            sub_seed=10000 + row,
+        )
+        for row in range(batch_size)
+    ]
+    talker.prepare_decode_buffers(requests)
+    row_indices = torch.arange(batch_size, device=device, dtype=torch.long)
+    positions = torch.arange(20, 20 + batch_size, device=device, dtype=torch.long)
+
+    actual = talker._sample_subtalker_token_seeded(
+        logits,
+        1,
+        row_indices=row_indices,
+        semantic_positions=positions,
+    )
+    monkeypatch.setattr(
+        sglang_model_module,
+        "sample_from_sorted_scores_with_seed_small_k",
+        lambda *args, **kwargs: None,
+    )
+    expected = talker._sample_subtalker_token_seeded(
+        logits,
+        1,
+        row_indices=row_indices,
+        semantic_positions=positions,
+    )
+
+    assert torch.equal(actual, expected)
+
+
 def test_capture_state_pre_yield_failure_restores_state():
     """An exception while staging capture state must not leak bucket-shaped
     _sub_* values into the eager fallback of the same step."""

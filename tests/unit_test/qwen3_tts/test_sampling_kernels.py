@@ -9,6 +9,7 @@ from sglang.srt.layers.sampler import multinomial_with_seed
 
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_sorted_probs_with_seed_small_k,
+    sample_from_sorted_scores_with_seed_small_k,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -58,5 +59,27 @@ def test_seeded_small_k_sampler_falls_back_for_cpu() -> None:
 
     assert (
         sample_from_sorted_probs_with_seed_small_k(probs, sorted_idx, seeds, positions)
+        is None
+    )
+
+
+def test_fused_filtering_sampler_falls_back_for_cpu() -> None:
+    scores = torch.ones((1, 2), dtype=torch.float32)
+    sorted_idx = torch.arange(2, dtype=torch.long).view(1, 2)
+    top_ks = torch.full((1,), 2, dtype=torch.long)
+    top_ps = torch.ones((1,), dtype=torch.float32)
+    seeds = torch.ones((1,), dtype=torch.long)
+    positions = torch.zeros((1,), dtype=torch.long)
+
+    assert (
+        sample_from_sorted_scores_with_seed_small_k(
+            scores,
+            sorted_idx,
+            top_ks,
+            top_ps,
+            seeds,
+            positions,
+            has_top_p=False,
+        )
         is None
     )

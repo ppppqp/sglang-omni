@@ -27,6 +27,7 @@ from sglang_omni.models.qwen3_tts.compat import (
 )
 from sglang_omni.models.qwen3_tts.sampling_kernels import (
     sample_from_sorted_probs_with_seed_small_k,
+    sample_from_sorted_scores_with_seed_small_k,
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
@@ -1476,8 +1477,27 @@ class Qwen3TTSTalker(nn.Module):
         top_ks = self._sub_top_k_tensor.index_select(0, row_indices)
         max_top_k = int(self._sub_sampled_max_top_k)
         has_unbounded_top_k = bool(self._sub_sampled_has_unbounded_top_k)
+        top_ps = self._sub_top_p_tensor.index_select(0, row_indices)
+        seeds = self._sub_sampling_seed_tensor.index_select(0, row_indices)
+        sub_positions = (
+            semantic_positions.to(device=logits.device, dtype=torch.long)
+            * max(int(self.config.num_code_groups) - 1, 1)
+            + int(layer_idx)
+            + 1
+        )
         if max_top_k > 0 and max_top_k < vocab_size and not has_unbounded_top_k:
             sorted_scores, sorted_idx = torch.topk(scores, max_top_k, dim=-1)
+            sampled = sample_from_sorted_scores_with_seed_small_k(
+                sorted_scores,
+                sorted_idx,
+                top_ks,
+                top_ps,
+                seeds,
+                sub_positions,
+                has_top_p=self._sub_sampled_has_top_p,
+            )
+            if sampled is not None:
+                return sampled.to(torch.long)
             rank = torch.arange(max_top_k, device=logits.device).unsqueeze(0)
             keep_top_k = rank < top_ks.unsqueeze(1)
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
@@ -1487,15 +1507,6 @@ class Qwen3TTSTalker(nn.Module):
             keep_all = (top_ks <= 0) | (top_ks >= vocab_size)
             keep_top_k = keep_all.unsqueeze(1) | (rank < top_ks.unsqueeze(1))
             sorted_scores = sorted_scores.masked_fill(~keep_top_k, -float("inf"))
-
-        top_ps = self._sub_top_p_tensor.index_select(0, row_indices)
-        seeds = self._sub_sampling_seed_tensor.index_select(0, row_indices)
-        sub_positions = (
-            semantic_positions.to(device=logits.device, dtype=torch.long)
-            * max(int(self.config.num_code_groups) - 1, 1)
-            + int(layer_idx)
-            + 1
-        )
 
         sorted_probs = torch.softmax(sorted_scores, dim=-1)
         if self._sub_sampled_has_top_p:
