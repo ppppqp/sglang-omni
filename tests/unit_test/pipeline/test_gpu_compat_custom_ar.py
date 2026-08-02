@@ -52,6 +52,18 @@ def _patch_pynvml(monkeypatch, fake: ModuleType | None) -> None:
     monkeypatch.setattr(gpu_compat, "_try_import_pynvml", lambda: fake)
 
 
+def test_rocm_skips_nvml_p2p_probe(monkeypatch) -> None:
+    monkeypatch.setattr(gpu_compat, "is_rocm", lambda: True)
+    monkeypatch.setattr(
+        gpu_compat,
+        "_try_import_pynvml",
+        lambda: (_ for _ in ()).throw(AssertionError("NVML must not be probed")),
+    )
+
+    assert gpu_compat.gpu_ids_support_p2p_mesh([0, 1]) is None
+    assert gpu_compat.should_disable_custom_all_reduce_for_gpus([0, 1]) is True
+
+
 def test_should_disable_with_no_or_single_gpu(monkeypatch) -> None:
     _patch_pynvml(monkeypatch, _FakeP2PNVML(not_ok_pairs={(0, 1)}))
     assert gpu_compat.should_disable_custom_all_reduce_for_gpus(None, env={}) is True
