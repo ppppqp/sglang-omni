@@ -27,6 +27,9 @@ uv pip install --no-deps qwen-tts==0.1.1
 
 The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
 
+The same `--no-deps` rule applies in the ROCm image; installing qwen-tts with
+its declared dependencies can replace the pinned ROCm PyTorch stack.
+
 Download a checkpoint (both repositories are public, no token required):
 
 ```bash
@@ -38,6 +41,36 @@ hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
 
 The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes
 while the `tts_engine` captures CUDA graphs.
+
+On ROCm, `torch.cuda` is PyTorch's HIP-compatible API, so the configuration and
+graph flags remain named `cuda`. The hand-written small-k sampling kernel is
+conservatively disabled on ROCm until it is qualified across supported gfx
+targets; generation falls back to the portable, seed-aware PyTorch sampler.
+
+### AMD ROCm correctness gate
+
+After starting the 0.6B server on ROCm, generate a small SeedTTS acceptance set:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --use-existing-server --port 8000 \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --max-samples 20 --concurrency 4 --warmup 1 \
+  --generate-only --output-dir /tmp/qwen3-tts-rocm
+python scripts/rocm/verify_tts_results.py /tmp/qwen3-tts-rocm
+```
+
+This verifies that every request completed and produced non-empty, decodable
+audio. For an output-quality gate, stop the TTS server, run the benchmark's
+`--transcribe-only` phase with Qwen3-ASR, then require the WER artifact:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  --max-samples 20 --output-dir /tmp/qwen3-tts-rocm --transcribe-only
+python scripts/rocm/verify_tts_results.py /tmp/qwen3-tts-rocm \
+  --require-wer --max-corpus-wer 0.10
+```
 
 ```bash
 # 0.6B

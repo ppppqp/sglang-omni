@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import torch
 
+from sglang_omni.utils.accelerator import is_rocm
+
 try:
     import triton
     import triton.language as tl
@@ -98,6 +100,11 @@ def sample_from_sorted_probs_with_seed_small_k(
     seeds: torch.Tensor,
     positions: torch.Tensor,
 ) -> torch.Tensor | None:
+    # This hand-written kernel has not yet been qualified across the ROCm gfx
+    # matrix. Returning None selects the bit-tested PyTorch sampler; enable a
+    # ROCm kernel only after the hardware probe establishes seed parity.
+    if is_rocm():
+        return None
     if (
         _seeded_gumbel_sample_sorted_kernel is None
         or not probs.is_cuda
