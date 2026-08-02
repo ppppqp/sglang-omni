@@ -187,6 +187,8 @@ def test_collect_gpu_diagnostics_reports_rocm_without_nvml(monkeypatch) -> None:
     assert environment["pytorch_hip_build"] == "7.0.0"
     assert environment["cuda_runtime_version"] is None
     assert environment["rocr_visible_devices"] == "0"
+    assert environment["active_visibility_variable"] == "ROCR_VISIBLE_DEVICES"
+    assert report["gpus"][0]["visible_device"] == 0
     assert report["gpus"][0]["architecture"].startswith("gfx942")
     rendered = gpu_diagnostics.render_gpu_diagnostics(report)
     assert "Accelerator platform: amd-rocm" in rendered

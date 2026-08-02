@@ -26,6 +26,8 @@ from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFano
 from sglang_omni.utils.accelerator import (
     AcceleratorPlatform,
     detect_accelerator_platform,
+    resolve_gpu_visibility,
+    visibility_env_keys,
 )
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
@@ -806,22 +808,8 @@ def get_stage_process_env(
 
     source_env = env if env is not None else os.environ
     platform = accelerator_platform or detect_accelerator_platform()
-    visibility_keys = (
-        ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
-        if platform is AcceleratorPlatform.AMD
-        else ("CUDA_VISIBLE_DEVICES",)
-    )
-    configured_masks = {
-        key: value
-        for key in visibility_keys
-        if (value := source_env.get(key)) is not None and value.strip()
-    }
-    if len(set(configured_masks.values())) > 1:
-        assignments = ", ".join(
-            f"{key}={value!r}" for key, value in configured_masks.items()
-        )
-        raise ValueError(f"conflicting GPU visibility masks: {assignments}")
-    original_visible = next(iter(configured_masks.values()), None)
+    visibility_keys = visibility_env_keys(platform)
+    _, original_visible = resolve_gpu_visibility(platform, source_env)
     if spec.gpu_id is None:
         raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
     if original_visible:

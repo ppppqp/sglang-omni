@@ -14,6 +14,7 @@ from typing import Any
 from sglang_omni.utils.accelerator import (
     AcceleratorPlatform,
     detect_accelerator_platform,
+    resolve_gpu_visibility,
 )
 from sglang_omni.utils.gpu_memory import (
     _decode_nvml_string,
@@ -339,10 +340,10 @@ def collect_gpu_diagnostics(
     """Collect diagnostics without loading model configuration or weights."""
 
     source_env = os.environ if env is None else env
-    visible_value = source_env.get("CUDA_VISIBLE_DEVICES")
-    visible_devices = parse_cuda_visible_devices(visible_value)
     torch = torch_module or importlib.import_module("torch")
     platform = detect_accelerator_platform(torch)
+    visibility_key, visible_value = resolve_gpu_visibility(platform, source_env)
+    visible_devices = parse_cuda_visible_devices(visible_value)
     # Importing/querying NVML in a ROCm environment can surface an unrelated
     # host NVIDIA driver and produce a misleading physical-device inventory.
     # NVML metadata is meaningful only for an NVIDIA PyTorch build.
@@ -372,6 +373,7 @@ def collect_gpu_diagnostics(
             "rocr_visible_devices": source_env.get("ROCR_VISIBLE_DEVICES"),
             "hip_visible_devices": source_env.get("HIP_VISIBLE_DEVICES"),
             "accelerator_platform": platform.value,
+            "active_visibility_variable": visibility_key,
             **system,
             "cuda_runtime_version": (
                 _cuda_runtime_version()
@@ -402,6 +404,10 @@ def render_gpu_diagnostics(report: Mapping[str, Any]) -> str:
     lines = [
         "SGLang-Omni GPU diagnostics (no model loaded)",
         f"Accelerator platform: {platform}",
+        (
+            "Active visibility mask: "
+            f"{environment.get('active_visibility_variable', 'CUDA_VISIBLE_DEVICES')}"
+        ),
         f"CUDA_VISIBLE_DEVICES: {visible if visible is not None else '<unset>'}",
         *(
             [

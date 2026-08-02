@@ -49,6 +49,18 @@ SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. I
 
 Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/).
 
+## Hardware Support
+
+| Backend | Status | Model coverage |
+|---|---|---|
+| NVIDIA CUDA | Supported | Full model matrix documented above |
+| AMD ROCm | Experimental | Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni BF16 |
+
+AMD deployments use the pinned SGLang ROCm images, host-SHM inter-stage
+transport, and model-specific correctness gates described in the
+[ROCm installation guide](./docs/get_started/installation_rocm.md). Support is
+experimental until those gates are continuously exercised on AMD hardware.
+
 ## Quick Start
 
 - [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)

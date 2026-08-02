@@ -7,7 +7,9 @@ from sglang_omni.utils.accelerator import (
     AcceleratorPlatform,
     detect_accelerator_platform,
     is_rocm,
+    resolve_gpu_visibility,
     supports_nvidia_cuda_ipc,
+    visibility_env_keys,
 )
 
 
@@ -38,3 +40,13 @@ def test_detects_device_agnostic_build() -> None:
 
     assert detect_accelerator_platform(torch) is AcceleratorPlatform.NONE
     assert not supports_nvidia_cuda_ipc(torch)
+
+
+def test_rocm_visibility_prefers_rocr_and_accepts_matching_aliases() -> None:
+    platform = AcceleratorPlatform.AMD
+
+    assert visibility_env_keys(platform)[0] == "ROCR_VISIBLE_DEVICES"
+    assert resolve_gpu_visibility(
+        platform,
+        {"ROCR_VISIBLE_DEVICES": " 2,3 ", "CUDA_VISIBLE_DEVICES": "2,3"},
+    ) == ("ROCR_VISIBLE_DEVICES", "2,3")
