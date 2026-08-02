@@ -85,6 +85,27 @@ The ASR CI gate runs Fun-ASR-Nano on this same benchmark entry point
 (`tests/test_model/test_asr_ci_fun_asr.py`). Qwen3-ASR remains the
 transcriber for the TTS and talker WER stages.
 
+### AMD ROCm correctness gate
+
+After installing the [ROCm build](../get_started/installation_rocm.md), run a
+small acceptance set before a full performance sweep:
+
+```bash
+ROCR_VISIBLE_DEVICES=0 sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-1.7B --port 8000
+
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --max-samples 20 --concurrencies 1,8 \
+  --repeats 1 --warmup --output /tmp/qwen3-asr-rocm.json
+python scripts/rocm/verify_asr_results.py /tmp/qwen3-asr-rocm.json \
+  --max-corpus-wer 0.03 --min-completion-rate 1.0
+```
+
+This is a correctness gate, not a performance threshold. It requires every
+request to complete and the worst aggregate corpus WER to remain at or below
+3%. Run the full dataset before publishing performance or production support
+claims.
+
 ## Known Limitations
 
 - The endpoint accepts one uploaded file per request.
