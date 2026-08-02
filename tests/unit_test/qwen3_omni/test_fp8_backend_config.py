@@ -379,6 +379,31 @@ def test_model_config_has_moe_prefers_effective_text_config() -> None:
 
 
 @pytest.mark.parametrize(
+    "model_arch_override",
+    ["Qwen3OmniTalker", "Qwen3OmniThinkerForCausalLM"],
+)
+def test_rocm_qwen3_omni_uses_portable_backends(
+    monkeypatch: pytest.MonkeyPatch,
+    model_arch_override: str,
+) -> None:
+    monkeypatch.setattr(model_worker, "is_rocm", lambda: True)
+    monkeypatch.setattr(model_worker, "_is_h20_device", lambda: False)
+    server_args = _server_args(
+        moe_runner_backend="flashinfer_cutlass",
+        fp8_gemm_runner_backend="deep_gemm",
+    )
+
+    model_worker._apply_model_worker_backend_policy(
+        server_args,
+        _model_config(quantization=None),
+        model_arch_override,
+    )
+
+    assert server_args.moe_runner_backend == "triton"
+    assert server_args.fp8_gemm_runner_backend == "triton"
+
+
+@pytest.mark.parametrize(
     (
         "cutlass_supported",
         "sm90_supported",

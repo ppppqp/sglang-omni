@@ -12,6 +12,7 @@ from sglang_omni.quantization import (
     normalize_quant_config,
     resolve_quant_config,
 )
+from sglang_omni.utils.accelerator import is_rocm
 
 if TYPE_CHECKING:
     from sglang.srt.configs.model_config import ModelConfig
@@ -433,11 +434,34 @@ def _apply_model_worker_backend_policy(
     )
     if is_qwen3_omni_arch and server_args.ep_size != 1:
         raise ValueError(
-            "Qwen3-Omni ModelWorker does not support expert parallelism; "
-            "use ep_size=1."
+            "Qwen3-Omni ModelWorker does not support expert parallelism; use ep_size=1."
         )
     has_moe = _model_config_has_moe(model_config)
     has_native_fp8_block_quant = _model_config_has_native_fp8_block_quant(model_config)
+
+    if is_qwen3_omni_arch and is_rocm():
+        if moe_runner_backend in {
+            "auto",
+            "cutlass",
+            "flashinfer_cutlass",
+            "flashinfer_trtllm",
+            "deep_gemm",
+        }:
+            server_args.moe_runner_backend = "triton"
+            moe_runner_backend = server_args.moe_runner_backend
+            logger.info("ROCm: selecting the portable Triton Qwen3-Omni MoE runner")
+
+        rocm_unsupported_fp8_backends = {
+            "cutlass",
+            "deep_gemm",
+            "flashinfer_cutlass",
+            "flashinfer_deepgemm",
+            "flashinfer_trtllm",
+        }
+        fp8_backend = _normalize_quantization(server_args.fp8_gemm_runner_backend)
+        if fp8_backend in rocm_unsupported_fp8_backends:
+            server_args.fp8_gemm_runner_backend = "triton"
+            logger.info("ROCm: replacing NVIDIA-only FP8 GEMM backend with Triton")
 
     if (
         model_arch_override == "Qwen3OmniTalker"

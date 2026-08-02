@@ -4,14 +4,19 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sgl_kernel import fused_qk_norm_rope
 from torch import nn
 from transformers import PretrainedConfig
+
+try:
+    from sgl_kernel import fused_qk_norm_rope
+except Exception:  # optional accelerator kernel; the PyTorch path remains valid
+    fused_qk_norm_rope = None
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
 from sglang_omni.models.weight_loader import default_weight_loader
 from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.utils import add_prefix
+from sglang_omni.utils.accelerator import is_rocm
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.distributed import (
     get_tensor_model_parallel_rank,
@@ -230,6 +235,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.use_fused_qk_norm_rope = (
             get_global_server_args().enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope
+            and not is_rocm()
+            and fused_qk_norm_rope is not None
         )
         self._used_fused_qk_norm_rope_last_call = False
         self._used_fused_set_kv_buffer_last_call = False
@@ -307,7 +314,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 alt_stream=self.alt_stream,
             )
             use_fused_set_kv_buffer = (
-                enable_fused_set_kv_buffer(forward_batch)
+                not is_rocm()
+                and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
             )
             q, k = self.rotary_emb(

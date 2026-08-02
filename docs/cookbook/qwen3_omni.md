@@ -29,6 +29,41 @@ Use the selector below to generate the exact launch command for your configurati
 
 ## Compatibility Matrix
 
+### AMD ROCm
+
+ROCm support initially targets BF16 on Instinct MI300/MI325 and MI350 GPUs.
+Use the [ROCm installation](../get_started/installation_rocm.md) and a
+disaggregated topology when thinker tensor parallelism is required. The runtime
+uses Triton for Qwen3-Omni MoE/FP8 operations when a configured backend is
+NVIDIA-only, and host SHM for inter-process stage tensors. PyTorch's
+HIP-compatible `torch.cuda` graph implementation remains enabled.
+
+Start with thinker-only serving, then qualify speech output on the intended GPU
+count. For speech correctness, run the existing SeedTTS benchmark against the
+server and gate its artifact:
+
+```bash
+python -m benchmarks.eval.benchmark_omni_seedtts \
+  --use-existing-server --port 8000 \
+  --max-samples 20 --max-concurrency 2 \
+  --generate-only --output-dir /tmp/qwen3-omni-rocm
+python scripts/rocm/verify_omni_results.py \
+  /tmp/qwen3-omni-rocm/speed_results.json
+```
+
+For the output-quality gate, run without `--generate-only` so the benchmark
+writes `eval_results.json`, then require corpus WER:
+
+```bash
+python scripts/rocm/verify_omni_results.py \
+  /tmp/qwen3-omni-rocm/eval_results.json \
+  --require-wer --max-corpus-wer 0.15
+```
+
+These thresholds establish functional parity, not a performance baseline.
+Record the GPU gfx target, ROCm image tag, TP size, graph settings, completion
+rate, WER, latency, and RTF before expanding the support matrix.
+
 Colocated topology requires `--config examples/configs/qwen3_omni_colocated_h20.yaml`
 (or `qwen3_omni_colocated_h200.yaml` on H200) to set per-stage GPU memory budgets.
 
