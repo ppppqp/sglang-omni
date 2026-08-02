@@ -122,6 +122,7 @@ def test_comm_router_routes_rocm_gpu_edges_through_shm() -> None:
     assert router.outbound("talker") is TransportKind.SHM
     assert router.inbound("talker") is TransportKind.SHM
     assert not router.can_use_direct_cuda_ipc("talker")
+    assert router.receive_device == torch.device("cuda:0")
 
 
 def test_comm_router_routes_rocm_cuda_compatible_payload_through_shm(
