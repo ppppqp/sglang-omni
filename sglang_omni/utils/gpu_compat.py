@@ -8,6 +8,7 @@ import logging
 import os
 from collections.abc import Mapping, MutableMapping, Sequence
 
+from sglang_omni.utils.accelerator import is_rocm
 from sglang_omni.utils.gpu_memory import (
     _get_device_handle,
     _shutdown_nvml,
@@ -25,6 +26,8 @@ def _get_compute_capability(
     logical_gpu_id: int,
     env: Mapping[str, str] | None = None,
 ) -> tuple[int, int] | None:
+    if is_rocm():
+        return None
     source_env = os.environ if env is None else env
     visible_devices = parse_cuda_visible_devices(source_env.get("CUDA_VISIBLE_DEVICES"))
     try:
@@ -69,6 +72,8 @@ def _get_compute_capability(
 
 
 def _get_cuda_device_count() -> int | None:
+    if is_rocm():
+        return None
     pynvml = _try_import_pynvml()
     if pynvml is not None:
         try:
@@ -165,6 +170,10 @@ def gpu_ids_support_p2p_mesh(
     """
     ids = list(dict.fromkeys(int(g) for g in logical_gpu_ids))
     if len(ids) < 2:
+        return None
+    # RCCL owns AMD topology selection. Querying host NVML in a ROCm container
+    # is irrelevant and may describe unrelated NVIDIA hardware on the host.
+    if is_rocm():
         return None
 
     pynvml = _try_import_pynvml()

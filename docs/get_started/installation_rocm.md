@@ -45,12 +45,22 @@ Run the model-free primitive probe and platform-aware diagnostic first:
 ```bash
 python3 scripts/rocm/verify_rocm.py
 sgl-omni check-gpu --strict
+python3 scripts/rocm/verify_runtime.py
+
+# Also verifies RCCL when at least two GPUs are available.
+torchrun --standalone --nproc-per-node=2 scripts/rocm/verify_runtime.py
 ```
 
 The probe verifies the ROCm PyTorch build, the pinned SGLang version, GPU
 visibility, a synchronized GPU matrix multiplication, and the Omni import. Each
 model enablement adds its own correctness recipe and hardware test rather than
 treating this environment check as proof of model correctness.
+
+The runtime probe verifies the exact transport contract used by the pipeline:
+a ROCm GPU payload must select SHM and survive a GPU-to-host-to-GPU round trip
+without changing its dtype, shape, device class, or values. Under `torchrun`, it
+also checks a multi-rank all-reduce through PyTorch's `nccl` backend (RCCL on
+ROCm).
 
 For multi-GPU serving, prefer `ROCR_VISIBLE_DEVICES` on Linux. Avoid setting
 conflicting `ROCR_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, and
