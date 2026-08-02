@@ -24,7 +24,8 @@ async def _verify_shm_round_trip(rank: int) -> None:
         gpu_stage_names={"target"},
         accelerator_platform=AcceleratorPlatform.AMD,
     )
-    expected = torch.arange(64, dtype=torch.float32, device="cuda:0") + rank
+    target_device = torch.device("cuda", torch.cuda.current_device())
+    expected = torch.arange(64, dtype=torch.float32, device=target_device) + rank
     payload = StagePayload(
         request_id=f"rocm-runtime-{rank}",
         request=OmniRequest(inputs=None),
@@ -42,11 +43,16 @@ async def _verify_shm_round_trip(rank: int) -> None:
         from_stage=router.stage_name,
         to_stage="target",
     )
-    restored = await read_payload(relay, payload.request_id, data_ref)
+    restored = await read_payload(
+        relay,
+        payload.request_id,
+        data_ref,
+        destination_device=target_device,
+    )
     put_op.mark_receiver_done()
     await put_op.wait_for_completion()
     actual = restored.data["tensor"]
-    if actual.device.type != "cuda" or not torch.equal(actual, expected):
+    if actual.device != target_device or not torch.equal(actual, expected):
         raise AssertionError("GPU -> SHM -> GPU payload round trip changed the tensor")
     router.close()
 
