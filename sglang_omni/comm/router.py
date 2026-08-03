@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Locality classification and relay ownership for Omni communication."""
+
 from __future__ import annotations
 
 from contextlib import suppress
@@ -9,6 +10,10 @@ import torch
 
 from sglang_omni.comm.data_ref import TransportKind
 from sglang_omni.relay.base import Relay, create_relay
+from sglang_omni.utils.accelerator import (
+    AcceleratorPlatform,
+    detect_accelerator_platform,
+)
 
 
 class CommRouter:
@@ -30,6 +35,7 @@ class CommRouter:
         remote_stage_names: set[str] | None = None,
         comm_config: dict[str, Any] | None = None,
         injected_relay: Relay | None = None,
+        accelerator_platform: AcceleratorPlatform | None = None,
     ) -> None:
         self.stage_name = stage_name
         self.gpu_id = gpu_id
@@ -51,17 +57,37 @@ class CommRouter:
         )
         self.comm_config = dict(comm_config or {})
         self.injected_relay = injected_relay
+        self.accelerator_platform = accelerator_platform or detect_accelerator_platform(
+            torch
+        )
         self._relays: dict[TransportKind, Relay] = {}
 
     @property
     def self_is_gpu(self) -> bool:
         return self.gpu_id is not None
 
+    @property
+    def receive_device(self) -> torch.device:
+        """Process-local device on which this stage consumes GPU tensors."""
+
+        if self.gpu_id is None:
+            return torch.device("cpu")
+        return torch.device("cuda", self.gpu_id)
+
     def is_local_object(self, target: str) -> bool:
         return target in self.same_process_targets
 
     def can_use_direct_cuda_ipc(self, target: str) -> bool:
-        return target in self._direct_cuda_ipc_targets
+        return (
+            self._supports_direct_cuda_ipc and target in self._direct_cuda_ipc_targets
+        )
+
+    @property
+    def _supports_direct_cuda_ipc(self) -> bool:
+        # Omni's CUDA IPC relay uses NVIDIA-specific IPC/event behavior. ROCm
+        # tensors still report device.type == "cuda", so placement alone cannot
+        # safely select it.
+        return self.accelerator_platform is not AcceleratorPlatform.AMD
 
     def outbound(self, target: str) -> TransportKind:
         if target in self.same_process_targets:
@@ -76,7 +102,11 @@ class CommRouter:
         # which does not exist yet.
         if target in self.remote_stage_names:
             return TransportKind.MOONCAKE
-        if self.self_is_gpu and target in self.gpu_stage_names:
+        if (
+            self._supports_direct_cuda_ipc
+            and self.self_is_gpu
+            and target in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
         return TransportKind.SHM
 
@@ -90,8 +120,14 @@ class CommRouter:
             return TransportKind.MOONCAKE
         if not data.is_cuda:
             return TransportKind.SHM
-        if self.self_is_gpu and target in self.gpu_stage_names:
+        if (
+            self._supports_direct_cuda_ipc
+            and self.self_is_gpu
+            and target in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
+        if self.self_is_gpu and target in self.gpu_stage_names:
+            return TransportKind.SHM
         raise ValueError(
             f"cuda stream chunk cannot be sent from {self.stage_name!r} to "
             f"non-GPU target {target!r}"
@@ -100,7 +136,11 @@ class CommRouter:
     def inbound(self, from_stage: str) -> TransportKind:
         if from_stage in self.remote_stage_names:
             return TransportKind.MOONCAKE
-        if self.self_is_gpu and from_stage in self.gpu_stage_names:
+        if (
+            self._supports_direct_cuda_ipc
+            and self.self_is_gpu
+            and from_stage in self.gpu_stage_names
+        ):
             return TransportKind.CUDA_IPC
         return TransportKind.SHM
 
@@ -139,7 +179,11 @@ class CommRouter:
         if not devices or devices == {"cpu"}:
             return TransportKind.SHM
         if "cuda" in devices and devices <= {"cpu", "cuda"}:
-            if self.self_is_gpu and target in self.gpu_stage_names:
+            if (
+                self._supports_direct_cuda_ipc
+                and self.self_is_gpu
+                and target in self.gpu_stage_names
+            ):
                 return TransportKind.CUDA_IPC
             return TransportKind.SHM
         raise ValueError(f"mixed or unsupported tensor devices in payload: {devices}")
@@ -172,10 +216,11 @@ class CommRouter:
             cfg["cuda_ipc_pool_size_mb"] if "cuda_ipc_pool_size_mb" in cfg else None
         )
         if kind is TransportKind.CUDA_IPC:
+            if not self._supports_direct_cuda_ipc:
+                raise ValueError("cuda_ipc relay is unavailable on AMD ROCm")
             if self.gpu_id is None:
                 raise ValueError(
-                    f"cuda_ipc relay requested for non-GPU stage "
-                    f"{self.stage_name!r}"
+                    f"cuda_ipc relay requested for non-GPU stage {self.stage_name!r}"
                 )
             return create_relay(
                 "cuda_ipc",

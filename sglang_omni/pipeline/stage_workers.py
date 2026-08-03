@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stage worker process specifications, entrypoints, and lifecycle groups."""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +23,10 @@ from sglang_omni.pipeline.stage.input import AggregatedInput, DirectInput
 from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.pipeline.stage.stream_queue import StreamQueue
 from sglang_omni.pipeline.tp_control import TPFollowerControlPlane, TPLeaderFanout
+from sglang_omni.utils.accelerator import (
+    AcceleratorPlatform,
+    detect_accelerator_platform,
+)
 from sglang_omni.utils.gpu_compat import (
     apply_gpu_compat_env_defaults,
     get_gpu_compat_env_defaults,
@@ -325,7 +330,7 @@ class StageGroup:
             if not p.is_alive():
                 process_spec = self.process_specs[i]
                 parts.append(
-                    f"{process_spec.process_name} " f"(pid={p.pid}, exit={p.exitcode})"
+                    f"{process_spec.process_name} (pid={p.pid}, exit={p.exitcode})"
                 )
         return ", ".join(parts) if parts else "(none)"
 
@@ -677,8 +682,8 @@ def _construct_stage(
     if spec.stream_done_to_fn:
         stream_done_to_fn = import_string(spec.stream_done_to_fn)
         allowed_stream_targets = set(_map_target_list(spec.stream_targets))
-        get_stream_done_targets = (
-            lambda request_id, output, _fn=stream_done_to_fn: _target_result(
+        get_stream_done_targets = lambda request_id, output, _fn=stream_done_to_fn: (
+            _target_result(
                 _fn(request_id, output),
                 allowed_targets=allowed_stream_targets,
                 allow_empty=True,
@@ -793,13 +798,30 @@ def _construct_scheduler(
 def get_stage_process_env(
     spec: StageLaunchConfig,
     env: Mapping[str, str] | None = None,
+    accelerator_platform: AcceleratorPlatform | None = None,
 ) -> dict[str, str]:
     """Return per-process env overrides needed before TP child startup."""
     if spec.tp_size <= 1:
         return {}
 
     source_env = env if env is not None else os.environ
-    original_visible = source_env.get("CUDA_VISIBLE_DEVICES")
+    platform = accelerator_platform or detect_accelerator_platform()
+    visibility_keys = (
+        ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+        if platform is AcceleratorPlatform.AMD
+        else ("CUDA_VISIBLE_DEVICES",)
+    )
+    configured_masks = {
+        key: value
+        for key in visibility_keys
+        if (value := source_env.get(key)) is not None and value.strip()
+    }
+    if len(set(configured_masks.values())) > 1:
+        assignments = ", ".join(
+            f"{key}={value!r}" for key, value in configured_masks.items()
+        )
+        raise ValueError(f"conflicting GPU visibility masks: {assignments}")
+    original_visible = next(iter(configured_masks.values()), None)
     if spec.gpu_id is None:
         raise ValueError(f"tp stage {spec.stage_name!r} requires a GPU id")
     if original_visible:
@@ -807,17 +829,22 @@ def get_stage_process_env(
         if spec.gpu_id >= len(visible_devices):
             raise ValueError(
                 f"tp stage {spec.stage_name!r} assigned gpu_id={spec.gpu_id}, "
-                f"but CUDA_VISIBLE_DEVICES only exposes {visible_devices}"
+                f"but the active GPU visibility mask only exposes {visible_devices}"
             )
         mapped_gpu = visible_devices[spec.gpu_id]
     else:
         mapped_gpu = str(spec.gpu_id)
 
-    return {
-        "CUDA_VISIBLE_DEVICES": mapped_gpu,
+    updates = {
         "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
         "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+        "SGLANG_ACCELERATOR_PLATFORM": platform.value,
     }
+    # Keep all HIP-compatible masks aligned so an inherited lower-precedence
+    # value cannot expose a different device to a native ROCm dependency.
+    for key in visibility_keys:
+        updates[key] = mapped_gpu
+    return updates
 
 
 def _prepare_cuda_environment(
@@ -826,12 +853,21 @@ def _prepare_cuda_environment(
 ) -> None:
     """Map TP rank processes to one visible CUDA device before torch init."""
     if os.environ.get("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS") == "true":
-        mapped_gpu = os.environ.get("CUDA_VISIBLE_DEVICES", str(spec.gpu_id))
+        platform = os.environ.get(
+            "SGLANG_ACCELERATOR_PLATFORM", AcceleratorPlatform.NVIDIA.value
+        )
+        visibility_key = (
+            "ROCR_VISIBLE_DEVICES"
+            if platform == AcceleratorPlatform.AMD.value
+            else "CUDA_VISIBLE_DEVICES"
+        )
+        mapped_gpu = os.environ.get(visibility_key, str(spec.gpu_id))
         _normalize_spec_gpu_id_to_local_device(spec)
         log.info(
-            "TP stage %s rank %d sees CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+            "TP stage %s rank %d sees %s=%s (local gpu_id=0)",
             spec.stage_name,
             spec.tp_rank,
+            visibility_key,
             mapped_gpu,
         )
         return
@@ -840,15 +876,21 @@ def _prepare_cuda_environment(
     if not env_updates:
         return
 
-    mapped_gpu = env_updates["CUDA_VISIBLE_DEVICES"]
+    visibility_key = (
+        "ROCR_VISIBLE_DEVICES"
+        if env_updates["SGLANG_ACCELERATOR_PLATFORM"] == AcceleratorPlatform.AMD.value
+        else "CUDA_VISIBLE_DEVICES"
+    )
+    mapped_gpu = env_updates[visibility_key]
     for key, value in env_updates.items():
         os.environ[key] = value
 
     _normalize_spec_gpu_id_to_local_device(spec)
     log.info(
-        "Mapped TP stage %s rank %d to CUDA_VISIBLE_DEVICES=%s (local gpu_id=0)",
+        "Mapped TP stage %s rank %d to %s=%s (local gpu_id=0)",
         spec.stage_name,
         spec.tp_rank,
+        visibility_key,
         mapped_gpu,
     )
 
